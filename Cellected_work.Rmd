@@ -1,0 +1,342 @@
+---
+title: "cellected"
+output: html_document
+date: "2024-10-02"
+---
+cellected markdown
+
+```{r}
+lung_data <- read.csv("/Users/basilbarter/Downloads/filtered_luekemia.csv", header = TRUE)
+```
+
+```{r}
+lung_data <- lung_data [ ,-1]
+head(lung_data)
+
+```
+
+```{r}
+# Separate the two groups
+type_0 <- data[data$type == 0, ]
+type_1 <- data[data$type == 1, ]
+
+# Find the size of the smaller group
+min_size <- min(nrow(type_0), nrow(type_1))
+
+# Sample from both groups to get equal sizes
+type_0_balanced <- type_0[sample(nrow(type_0), min_size), ]
+type_1_balanced <- type_1[sample(nrow(type_1), min_size), ]
+
+# Combine the two balanced groups back into one dataset
+data <- rbind(type_0_balanced, type_1_balanced)
+
+```
+
+```{r}
+# Load ggplot2 for better plotting
+library(ggplot2)
+
+ggplot(data, aes(x = factor(type), y = data[[1]], color = factor(type))) +
+  geom_boxplot(outlier.shape = NA) +  # Create boxplot without showing outliers separately
+  geom_jitter(width = 0.2) +  # Add jittered points (to avoid overlap)
+  labs(x = "Type (0 = Control, 1 = Cancer)", y = "Gene Expression (First Column)") +
+  theme_minimal()  # Nice clean theme
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Function to calculate the mean, standard deviation, and p-value for a specific column
+stat_function <- function(data, col_number) {
+  
+  # Calculate mean for type 0 and type 1
+  mean_0 <- mean(data[data$type == 0, col_number], na.rm = TRUE)
+  mean_1 <- mean(data[data$type == 1, col_number], na.rm = TRUE)
+  
+  # Calculate standard deviation for type 0 and type 1
+  sd_0 <- sd(data[data$type == 0, col_number], na.rm = TRUE)
+  sd_1 <- sd(data[data$type == 1, col_number], na.rm = TRUE)
+  
+  # Perform unpaired t-test between type 0 and type 1 for the specified column
+  t_test_result <- t.test(data[data$type == 0, col_number], data[data$type == 1, col_number])
+  p_value <- t_test_result$p.value
+  
+  col_name <- paste0(colnames(data[col_number]))
+  
+  # Combine the results into a dataframe with row names and column name as 'gene_X'
+  output_stats <- data.frame(
+    stat_value = c(mean_0, mean_1, sd_0, sd_1, p_value),  # store results in one column
+    row.names = c("mean_type_0", "mean_type_1", "sd_type_0", "sd_type_1", "p_value")
+  )
+  
+  # Rename the column to 'gene_X'
+  colnames(output_stats) <- col_name
+  
+  return(output_stats)
+}
+
+# Call the function for the first column
+result_stat_function <- stat_function(data, 1)
+
+# Print the result
+print(result_stat_function)
+
+
+```
+
+```{R}
+
+# Initialize the result using the first column dynamically
+overall_result_stat <- stat_function(data, 1)
+
+# Loop through the rest of the columns (excluding the last column)
+for (i in 2:(ncol(data) - 1)) {  # Automatically loop through all but the last column
+  result_stat_function <- stat_function(data, i)
+  
+  # Combine the results column-wise
+  overall_result_stat <- cbind(overall_result_stat, result_stat_function)
+}
+
+# Print the combined result for all columns
+print(overall_result_stat)
+
+
+```
+
+```{r}
+
+
+# Step 1: Extract the "p-value" row
+p_values <-overall_result_stat["p_value", ]
+
+# Step 2: Order the columns based on the p-values (ascending order)
+ordered_cols <- order(as.numeric(p_values))
+
+# Step 3: Reorder the dataframe based on the ordered p-values
+data_ordered <- overall_result_stat[, ordered_cols]
+
+# Step 1: Extract the ordered columns based on p-values
+ordered_expression <- data[, ordered_cols]
+
+# Step 2: Add the "type" column back to the ordered dataframe
+ordered_df <- cbind(ordered_expression, type = data$type)
+
+
+```
+
+```{r}
+
+# Assuming the first column (x-axis) and second column (y-axis) are in ordered_df
+ggplot(ordered_df, aes(x = ordered_df[[1]], y = ordered_df[[2]], color = ordered_df$type)) + 
+  geom_point()
+
+
+?ggplot
+```
+
+
+
+```{r}
+
+# Load the necessary libraries
+library(e1071)  # For SVM
+library(caret)  # For splitting and evaluating the data
+library(ggplot2)  # For plotting
+
+# Assuming the first two columns of the dataset are the gene expressions, and the "type" column is the last one
+set.seed(123)  # For reproducibility
+
+# Split the data into training and testing sets (70% train, 30% test)
+train_index <- createDataPartition(ordered_df$type, p = 0.7, list = FALSE)
+train_data <- ordered_df[train_index, ]   # Training set
+test_data <- ordered_df[-train_index, ]   # Testing set
+
+# Ensure you're selecting the correct columns: first two columns for gene expressions, and the last column for type
+train_data_genes <- train_data[, c(1, 2, ncol(train_data))]  # First two columns for gene expressions, last column for type
+test_data_genes <- test_data[, c(1, 2, ncol(test_data))]      # Same for test data
+
+# Rename the columns for clarity
+colnames(train_data_genes) <- c("gene_1", "gene_2", "type")
+colnames(test_data_genes) <- c("gene_1", "gene_2", "type")
+
+# Convert 'type' to factor for classification
+train_data_genes$type <- as.factor(train_data_genes$type)
+test_data_genes$type <- as.factor(test_data_genes$type)
+
+# Train the SVM model using the gene expressions and type with a linear kernel
+svm_model <- svm(type ~ gene_1 + gene_2, data = train_data_genes, kernel = "linear", type = "C-classification")
+
+# Predict on the test set
+predictions <- predict(svm_model, test_data_genes)
+
+# Evaluate the model using a confusion matrix
+conf_matrix <- confusionMatrix(predictions, test_data_genes$type)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+# Plot the decision boundary (hyperplane)
+
+# Create a grid of values for gene_1 and gene_2 for plotting
+x_seq <- seq(min(train_data_genes$gene_1), max(train_data_genes$gene_1), length = 100)
+y_seq <- seq(min(train_data_genes$gene_2), max(train_data_genes$gene_2), length = 100)
+grid <- expand.grid(gene_1 = x_seq, gene_2 = y_seq)
+
+# Predict on the grid to get the decision boundary
+grid$prediction <- predict(svm_model, grid)
+
+# Plot the data points and the decision boundary (hyperplane)
+ggplot() +
+  # Plot the data points
+  geom_point(data = train_data_genes, aes(x = gene_1, y = gene_2, color = factor(type)), size = 3, shape = 19) +
+  
+  # Plot the decision boundary (hyperplane) as contour at 0.5
+  stat_contour(data = grid, aes(x = gene_1, y = gene_2, z = as.numeric(prediction)), breaks = 0.5, color = "black", size = 1.2) +
+  
+  # Add filled background colors for the decision regions
+  geom_tile(data = grid, aes(x = gene_1, y = gene_2, fill = factor(prediction)), alpha = 0.2) +
+
+  # Labels and theme adjustments
+  labs(title = "SVM Decision Boundary for Cancer Prediction",
+       subtitle = "SVM Linear Kernel on Gene Expression Data",
+       x = "Gene 1 Expression",
+       y = "Gene 2 Expression") +
+  
+  # Use a professional color scheme and theme
+  theme_minimal(base_size = 15) +
+  
+  # Customize the color of the classes
+  scale_color_manual(values = c("red", "blue"), name = "Type", labels = c("Control", "Cancer")) +
+  
+  # Customize the decision region fill
+  scale_fill_manual(values = c("pink", "lightblue"), name = "Region", labels = c("Control Region", "Cancer Region")) +
+  
+  # Add a clean legend
+  theme(legend.position = "right")
+
+```
+
+# create individual box plot graphs for top ranked genes, do a 4x4 grid. make random forest model (does random forest use binary for each box plot or does it take into account )
+
+```{r}
+# Load necessary libraries
+library(randomForest)  # For Random Forest
+library(ggplot2)       # For plotting
+library(caret)         # For splitting and evaluating the data
+
+# Assuming 'ordered_df' contains the gene expressions and 'type' column
+set.seed(123)  # For reproducibility
+
+# Split the data into training and testing sets (70% train, 30% test)
+train_index <- createDataPartition(ordered_df$type, p = 0.7, list = FALSE)
+train_data <- ordered_df[train_index, ]   # Training set
+test_data <- ordered_df[-train_index, ]   # Testing set
+
+# Convert 'type' to factor for classification
+train_data$type <- as.factor(train_data$type)
+test_data$type <- as.factor(test_data$type)
+
+# Train the Random Forest model using all columns except 'type' to predict 'type'
+rf_model <- randomForest(type ~ ., data = train_data, ntree = 100, importance = TRUE)
+
+# Predict probabilities on the test set
+pred_probs <- predict(rf_model, test_data, type = "prob")
+
+# Get the predicted class for the test data
+pred_class <- predict(rf_model, test_data)
+
+# Create a new data frame for plotting, including the true class, predicted class, and probabilities
+plot_data <- data.frame(
+  test_data,
+  pred_class = pred_class,
+  cancer_prob = pred_probs[, 2],  # Probability of being cancer
+  control_prob = pred_probs[, 1]  # Probability of being control
+)
+
+# Add a column to identify misclassified points
+plot_data$misclassified <- ifelse(plot_data$type != plot_data$pred_class, TRUE, FALSE)
+
+# Plot the probability distributions of cancer and control with correct and incorrect classifications
+
+ggplot(plot_data, aes(x = cancer_prob, fill = interaction(type, misclassified))) +
+  # Use density plot for smooth probability distribution
+  geom_histogram(alpha = 0.6, adjust = 1.5) +
+  
+  # Customize the fill color: red for cancer, blue for control, green for misclassified
+  scale_fill_manual(values = c("0.FALSE" = "blue", "1.FALSE" = "red", "0.TRUE" = "green", "1.TRUE" = "green"),
+                    name = "Classification",
+                    labels = c("Control (Correct)", "Cancer (Correct)", "Misclassified")) +
+  
+  # Add labels and title
+  labs(title = "Probability Distribution for Cancer Prediction",
+       x = "Probability of Being Cancer",
+       y = "Density") +
+  
+  # Use a clean theme
+  theme_minimal(base_size = 15) +
+  
+  # Add a legend
+  theme(legend.position = "right")
+
+
+```
+
+```{r}
+# Load necessary libraries
+library(randomForest)  # For Random Forest
+library(dplyr)  # For data manipulation
+library(tidyr)
+
+# Assuming rf_model is already trained from previous steps
+
+# Step 1: Extract feature importance
+importance_scores <- importance(rf_model)
+
+# Step 2: Create a dataframe for feature importance
+importance_df <- data.frame(
+  Gene = rownames(importance_scores), 
+  MeanDecreaseGini = importance_scores[, "MeanDecreaseGini"],
+  stringsAsFactors = FALSE
+)
+
+# Optional: Sort the dataframe by importance in descending order
+importance_df <- importance_df %>%
+  arrange(desc(MeanDecreaseGini))
+
+# Output the importance dataframe
+print(importance_df)
+
+
+
+# Assuming 'importance_df' contains the Gini importance scores
+
+# Step 1: Transpose data_ordered to get genes as rows
+data_ordered_t <- data_ordered %>%
+  tibble::rownames_to_column("Metric") %>%  # Treat the current rownames as a column "Metric"
+  pivot_longer(cols = -Metric, names_to = "Gene", values_to = "Value")  # Genes as rows
+
+# Step 2: Merge transposed data with importance_df
+# Add the Gini importance scores as a new "Metric"
+gini_df <- importance_df %>%
+  rename(Value = MeanDecreaseGini) %>%   # Rename to match the data_ordered_t structure
+  mutate(Metric = "MeanDecreaseGini")    # Add a Metric name for Gini scores
+
+# Combine the original data and the Gini scores
+combined_df <- bind_rows(data_ordered_t, gini_df)
+
+# Step 3: Reshape the data back to its wide format
+data_ordered_with_gini <- combined_df %>%
+  pivot_wider(names_from = Gene, values_from = Value)
+
+# View the new dataframe with Gini scores as an added row
+print(data_ordered_with_gini)
+
+```
